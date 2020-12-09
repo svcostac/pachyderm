@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pachyderm/pachyderm/src/server/pkg/dbutil"
+	"github.com/jmoiron/sqlx"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/chunk"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/fileset/index"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/track"
@@ -16,9 +16,7 @@ import (
 )
 
 // NewTestStorage constructs a local storage instance scoped to the lifetime of the test
-func NewTestStorage(t testing.TB) *Storage {
-	db := dbutil.NewTestDB(t)
-	tr := track.NewTestTracker(t, db)
+func NewTestStorage(t testing.TB, db *sqlx.DB, tr track.Tracker) *Storage {
 	_, chunks := chunk.NewTestStorage(t, db, tr)
 	store := NewTestStore(t, db)
 	return NewStorage(store, tr, chunks)
