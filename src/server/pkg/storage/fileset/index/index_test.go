@@ -12,7 +12,7 @@ import (
 )
 
 func write(tb testing.TB, chunks *chunk.Storage, fileNames []string) *Index {
-	iw := NewWriter(context.Background(), chunks, "")
+	iw := NewWriter(context.Background(), chunks, "test")
 	for _, fileName := range fileNames {
 		idx := &Index{
 			Path: fileName,

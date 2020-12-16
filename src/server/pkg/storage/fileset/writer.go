@@ -76,6 +76,8 @@ func newWriter(ctx context.Context, store Store, tracker track.Tracker, chunks *
 }
 
 // Append creates an append operation for a file and provides a scoped file writer.
+// TODO: providing the tag here, since it is required, is a better API than getting a *FileWriter
+// which is just a writer that panics if you don't call Append(tag) first.
 func (w *Writer) Append(p string, cb func(*FileWriter) error) error {
 	fw, err := w.newFileWriter(p, w.cw)
 	if err != nil {
