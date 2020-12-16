@@ -369,7 +369,6 @@ type deleter struct {
 	store Store
 }
 
-// TODO: This needs to be implemented, temporary filesets are still in Postgres.
 func (d *deleter) Delete(ctx context.Context, id string) error {
-	return nil
+	return d.store.Delete(ctx, id[len(TrackerPrefix):])
 }

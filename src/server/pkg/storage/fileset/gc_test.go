@@ -33,4 +33,5 @@ func TestGC(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, countDeleted > 0)
 	// check that it's not there
+	require.False(t, s.exists(ctx, testFilesetName))
 }
