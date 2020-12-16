@@ -43,14 +43,14 @@ func NewGarbageCollector(tracker Tracker, period time.Duration, deleter Deleter)
 }
 
 // Run runs the gc loop, until the context is cancelled. It returns ErrContextCancell on exit.
-func (gc *GarbageCollector) Run(ctx context.Context) error {
+func (gc *GarbageCollector) RunForever(ctx context.Context) error {
 	ticker := time.NewTicker(gc.period)
 	defer ticker.Stop()
 	for {
 		if err := func() error {
 			ctx, cf := context.WithTimeout(ctx, gc.period/2)
 			defer cf()
-			return gc.runUntilEmpty(ctx)
+			return gc.RunUntilEmpty(ctx)
 		}(); err != nil {
 			logrus.Errorf("gc: %v", err)
 		}
@@ -62,9 +62,9 @@ func (gc *GarbageCollector) Run(ctx context.Context) error {
 	}
 }
 
-func (gc *GarbageCollector) runUntilEmpty(ctx context.Context) error {
+func (gc *GarbageCollector) RunUntilEmpty(ctx context.Context) error {
 	for {
-		n, err := gc.runOnce(ctx)
+		n, err := gc.RunOnce(ctx)
 		if err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func (gc *GarbageCollector) runUntilEmpty(ctx context.Context) error {
 	return nil
 }
 
-func (gc *GarbageCollector) runOnce(ctx context.Context) (int, error) {
+func (gc *GarbageCollector) RunOnce(ctx context.Context) (int, error) {
 	var n int
 	err := gc.tracker.IterateDeletable(ctx, func(id string) error {
 		if err := gc.deleteObject(ctx, id); err != nil {

@@ -21,7 +21,6 @@ func NewPostgresTracker(db *sqlx.DB) Tracker {
 }
 
 func (t *postgresTracker) CreateObject(ctx context.Context, id string, pointsTo []string, ttl time.Duration) error {
-	// TODO: contraints on ttl? ttl = 0 has to be interpretted as no ttl, but all other values will make it through
 	for _, dwn := range pointsTo {
 		if dwn == id {
 			return ErrSelfReference
@@ -30,7 +29,7 @@ func (t *postgresTracker) CreateObject(ctx context.Context, id string, pointsTo 
 	return t.withTx(ctx, func(tx *sqlx.Tx) error {
 		var oid int
 		if err := func() error {
-			if ttl > 0 {
+			if ttl != 0 {
 				return tx.GetContext(ctx, &oid,
 					`INSERT INTO storage.tracker_objects (str_id, expires_at)
 				VALUES ($1, CURRENT_TIMESTAMP + $2 * interval '1 microsecond')

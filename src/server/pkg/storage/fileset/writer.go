@@ -8,7 +8,6 @@ import (
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/chunk"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/fileset/index"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/track"
-	"github.com/pachyderm/pachyderm/src/server/pkg/uuid"
 )
 
 // TODO: Size zero files need to be addressed now that we are moving away from storing tar headers.
@@ -30,6 +29,9 @@ func (fw *FileWriter) Append(tag string) {
 
 func (fw *FileWriter) Write(data []byte) (int, error) {
 	parts := fw.idx.File.Parts
+	if len(parts) < 1 {
+		panic("must specify a tag before writing")
+	}
 	part := parts[len(parts)-1]
 	part.SizeBytes += int64(len(data))
 	fw.w.sizeBytes += int64(len(data))
@@ -54,7 +56,6 @@ type Writer struct {
 }
 
 func newWriter(ctx context.Context, store Store, tracker track.Tracker, chunks *chunk.Storage, path string, opts ...WriterOption) *Writer {
-	uuidStr := uuid.NewWithoutDashes()
 	w := &Writer{
 		ctx:     ctx,
 		store:   store,
@@ -68,9 +69,9 @@ func newWriter(ctx context.Context, store Store, tracker track.Tracker, chunks *
 	if w.noUpload {
 		chunkWriterOpts = append(chunkWriterOpts, chunk.WithNoUpload())
 	}
-	w.additive = index.NewWriter(ctx, chunks, "additive-index-writer-"+uuidStr)
-	w.deletive = index.NewWriter(ctx, chunks, "deletive-index-writer-"+uuidStr)
-	w.cw = chunks.NewWriter(ctx, "chunk-writer-"+uuidStr, w.callback, chunkWriterOpts...)
+	w.additive = index.NewWriter(ctx, chunks, "additive-index-writer")
+	w.deletive = index.NewWriter(ctx, chunks, "deletive-index-writer")
+	w.cw = chunks.NewWriter(ctx, "chunk-writer", w.callback, chunkWriterOpts...)
 	return w
 }
 

@@ -13,13 +13,24 @@ import (
 func TestGC(t *testing.T) {
 	ctx := context.Background()
 	db := dbutil.NewTestDB(t)
-	tr := track.NewPostgresTracker(db)
+	tr := track.NewTestTracker(t, db)
 	s := NewTestStorage(t, db, tr)
-	go s.GC(ctx)
-
-	w := s.NewWriter(ctx, "testpath", WithTTL(-time.Microsecond))
-	require.NoError(t, w.Append("a", func(fw *FileWriter) error {
+	gc := s.newGC()
+	// create a file, which should have already expired.
+	const testFilesetName = "testFilesetName"
+	w := s.NewWriter(ctx, testFilesetName, WithTTL(-time.Hour))
+	err := w.Append("a.txt", func(fw *FileWriter) error {
+		fw.Append("tag1")
 		_, err := fw.Write([]byte("test data"))
 		return err
-	}))
+	})
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	// check that it's there
+	require.True(t, s.exists(ctx, testFilesetName))
+	// run the gc
+	countDeleted, err := gc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, countDeleted > 0)
+	// check that it's not there
 }

@@ -126,6 +126,12 @@ func (s *Storage) Open(ctx context.Context, fileSets []string, opts ...index.Opt
 	return newMergeReader(s.chunks, fss), nil
 }
 
+// TODO: public?
+func (s *Storage) exists(ctx context.Context, fileset string) bool {
+	_, err := s.store.Get(ctx, fileset)
+	return err == nil
+}
+
 // Shard shards the file set into path ranges.
 // TODO This should be extended to be more configurable (different criteria
 // for creating shards).
@@ -306,6 +312,10 @@ func (s *Storage) WithRenewer(ctx context.Context, ttl time.Duration, cb func(co
 
 // GC creates a track.GarbageCollector with a Deleter that can handle deleting filesets and chunks
 func (s *Storage) GC(ctx context.Context) error {
+	return s.newGC().RunForever(ctx)
+}
+
+func (s *Storage) newGC() *track.GarbageCollector {
 	const period = 10 * time.Second
 	tmpDeleter := track.NewTmpDeleter()
 	chunkDeleter := s.chunks.NewDeleter()
@@ -324,8 +334,7 @@ func (s *Storage) GC(ctx context.Context) error {
 			return nil
 		}
 	})
-	gc := track.NewGarbageCollector(s.tracker, period, mux)
-	return gc.Run(ctx)
+	return track.NewGarbageCollector(s.tracker, period, mux)
 }
 
 func (s *Storage) levelSize(i int) int64 {
