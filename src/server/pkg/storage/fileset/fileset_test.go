@@ -36,29 +36,6 @@ type testPart struct {
 	data []byte
 }
 
-// type testDataOp struct {
-// 	data   []byte
-// 	tag    string
-// 	hashes []string
-// }
-
-// func generateDataOps(n int) []*Metadata {
-// 	numTags := rand.Intn(maxTags) + 1
-// 	tags := []*chunk.Tag{}
-// 	tagSize := n / numTags
-// 	for i := 0; i < numTags-1; i++ {
-// 		tags = append(tags, &chunk.Tag{
-// 			Id:        strconv.Itoa(i),
-// 			SizeBytes: int64(tagSize),
-// 		})
-// 	}
-// 	tags = append(tags, &chunk.Tag{
-// 		Id:        strconv.Itoa(numTags - 1),
-// 		SizeBytes: int64(n - (numTags-1)*tagSize),
-// 	})
-// 	return tags
-// }
-
 func appendFile(t *testing.T, w *Writer, path string, parts []*testPart) {
 	// Write content and tags.
 	err := w.Append(path, func(fw *FileWriter) error {
@@ -116,18 +93,8 @@ func checkFile(t *testing.T, f File, tf *testFile) {
 	require.NoError(t, eg.Wait())
 }
 
-// func dataRefsToHashes(dataRefs []*chunk.DataRef) []string {
-// 	var hashes []string
-// 	for _, dataRef := range dataRefs {
-// 		if dataRef.Hash == "" {
-// 			hashes = append(hashes, dataRef.ChunkInfo.Chunk.Hash)
-// 			continue
-// 		}
-// 		hashes = append(hashes, dataRef.Hash)
-// 	}
-// 	return hashes
-// }
-
+// newTestStorage creates a storage object with a test db and test tracker
+// both of those components are kept hidden, so this is only appropriate for testing this package.
 func newTestStorage(t *testing.T) *Storage {
 	db := dbutil.NewTestDB(t)
 	tr := track.NewTestTracker(t, db)
@@ -223,86 +190,3 @@ func TestCopy(t *testing.T) {
 	}))
 	require.Equal(t, initialChunkCount, finalChunkCount)
 }
-
-// func TestCompaction(t *testing.T) {
-// 	require.NoError(t, WithLocalStorage(func(fileSets *Storage) error {
-// 		msg := random.SeedRand()
-// 		numFileSets := 5
-// 		// Generate filesets.
-// 		files := generateFileSets(t, fileSets, numFileSets, testPath, msg)
-// 		// Get the file hashes.
-// 		getHashes(t, fileSets, files, msg)
-// 		// Compact the files.
-// 		_, err := fileSets.Compact(context.Background(), path.Join(testPath, Compacted), []string{testPath}, 0)
-// 		require.NoError(t, err, msg)
-// 		// Check the files.
-// 		r := fileSets.NewReader(context.Background(), path.Join(testPath, Compacted))
-// 		require.NoError(t, r.iterate(func(fr *FileReader) error {
-// 			checkFile(t, fr, files[0], msg)
-// 			files = files[1:]
-// 			return nil
-// 		}), msg)
-// 		return nil
-// 	}))
-// }
-
-// func generateFileSets(t *testing.T, fileSets *Storage, numFileSets int, prefix, msg string) []*testFile {
-// 	fileNames := index.Generate("abcd")
-// 	files := []*testFile{}
-// 	// Generate the files and randomly distribute them across the filesets.
-// 	var ws []*Writer
-// 	for i := 0; i < numFileSets; i++ {
-// 		ws = append(ws, fileSets.newWriter(context.Background(), path.Join(prefix, strconv.Itoa(i))))
-// 	}
-// 	for i, fileName := range fileNames {
-// 		data := chunk.RandSeq(rand.Intn(max))
-// 		files = append(files, &testFile{
-// 			name: "/" + fileName,
-// 			data: data,
-// 			tags: generateTags(len(data)),
-// 		})
-// 		// Shallow copy for slicing as data is distributed.
-// 		f := *files[i]
-// 		wsCopy := make([]*Writer, len(ws))
-// 		copy(wsCopy, ws)
-// 		// Randomly distribute tagged data among filesets.
-// 		for len(f.tags) > 0 {
-// 			// Randomly select fileset to write to.
-// 			i := rand.Intn(len(wsCopy))
-// 			w := wsCopy[i]
-// 			wsCopy = append(wsCopy[:i], wsCopy[i+1:]...)
-// 			// Write the rest of the file if this is the last fileset.
-// 			if len(wsCopy) == 0 {
-// 				writeFile(t, w, &f, msg)
-// 				break
-// 			}
-// 			// Choose a random number of the tags left.
-// 			numTags := rand.Intn(len(f.tags)) + 1
-// 			var size int
-// 			for _, tag := range f.tags[:numTags] {
-// 				size += int(tag.SizeBytes)
-// 			}
-// 			// Create file for writing and remove data/tags from rest of the file.
-// 			fWrite := f
-// 			fWrite.data = fWrite.data[:size]
-// 			fWrite.tags = fWrite.tags[:numTags]
-// 			f.data = f.data[size:]
-// 			f.tags = f.tags[numTags:]
-// 			writeFile(t, w, &fWrite, msg)
-// 		}
-// 	}
-// 	for _, w := range ws {
-// 		require.NoError(t, w.Close(), msg)
-// 	}
-// 	return files
-// }
-
-// func getHashes(t *testing.T, fileSets *Storage, files []*testFile, msg string) {
-// 	writeFileSet(t, fileSets, path.Join(scratchPath, Compacted), files, msg)
-// 	r := fileSets.newReader(context.Background(), path.Join(scratchPath, Compacted))
-// 	require.NoError(t, r.iterate(func(fr *FileReader) error {
-// 		files[0].hashes = dataRefsToHashes(fr.Index().DataOp.DataRefs)
-// 		files = files[1:]
-// 		return nil
-// 	}), msg)
-// }
