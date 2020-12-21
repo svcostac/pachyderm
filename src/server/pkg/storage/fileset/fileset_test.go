@@ -174,50 +174,55 @@ func TestWriteThenRead(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// func TestCopy(t *testing.T) {
-// 	fileSets := newTestStorage(t)
-// 	msg := random.SeedRand()
-// 	fileNames := index.Generate("abc")
-// 	files := []*testFile{}
-// 	// Write the initial fileset and count the chunks.
-// 	for _, fileName := range fileNames {
-// 		data := chunk.RandSeq(rand.Intn(max))
-// 		files = append(files, &testFile{
-// 			name: "/" + fileName,
-// 			data: data,
-// 			tags: generateTags(len(data)),
-// 		})
-// 	}
-// 	originalPath := path.Join(testPath, "original")
-// 	writeFileSet(t, fileSets, originalPath, files, msg)
-// 	var initialChunkCount int64
-// 	require.NoError(t, fileSets.ChunkStorage().List(context.Background(), func(_ string) error {
-// 		initialChunkCount++
-// 		return nil
-// 	}), msg)
-// 	// Copy intial fileset to a new copy fileset.
-// 	r := fileSets.newReader(context.Background(), originalPath)
-// 	copyPath := path.Join(testPath, "copy")
-// 	wCopy := fileSets.newWriter(context.Background(), copyPath)
-// 	require.NoError(t, r.iterate(func(fr *FileReader) error {
-// 		return wCopy.CopyFile(fr)
-// 	}), msg)
-// 	require.NoError(t, wCopy.Close(), msg)
-// 	// Compare initial fileset and copy fileset.
-// 	rCopy := fileSets.newReader(context.Background(), copyPath)
-// 	require.NoError(t, rCopy.iterate(func(fr *FileReader) error {
-// 		checkFile(t, fr, files[0], msg)
-// 		files = files[1:]
-// 		return nil
-// 	}), msg)
-// 	// No new chunks should get created by the copy.
-// 	var finalChunkCount int64
-// 	require.NoError(t, fileSets.ChunkStorage().List(context.Background(), func(_ string) error {
-// 		finalChunkCount++
-// 		return nil
-// 	}), msg)
-// 	require.Equal(t, initialChunkCount, finalChunkCount, msg)
-// }
+func TestCopy(t *testing.T) {
+	ctx := testutil.NewTestContext(t)
+	fileSets := newTestStorage(t)
+	fileNames := index.Generate("abc")
+	files := []*testFile{}
+	for _, fileName := range fileNames {
+		var parts []*testPart
+		for _, tagInt := range rand.Perm(maxTags) {
+			tag := fmt.Sprintf("%08x", tagInt)
+			data := chunk.RandSeq(rand.Intn(max))
+			parts = append(parts, &testPart{
+				tag:  tag,
+				data: data,
+			})
+		}
+		files = append(files, &testFile{
+			path: "/" + fileName,
+		})
+	}
+	originalPath := path.Join(testPath, "original")
+	writeFileSet(t, fileSets, originalPath, files)
+
+	var initialChunkCount int64
+	require.NoError(t, fileSets.ChunkStorage().List(ctx, func(_ string) error {
+		initialChunkCount++
+		return nil
+	}))
+	// Copy intial fileset to a new copy fileset.
+	r := fileSets.newReader(originalPath)
+	copyPath := path.Join(testPath, "copy")
+	wCopy := fileSets.newWriter(context.Background(), copyPath)
+	require.NoError(t, CopyFiles(ctx, wCopy, r))
+	require.NoError(t, wCopy.Close())
+
+	// Compare initial fileset and copy fileset.
+	rCopy := fileSets.newReader(copyPath)
+	require.NoError(t, rCopy.Iterate(ctx, func(f File) error {
+		checkFile(t, f, files[0])
+		files = files[1:]
+		return nil
+	}))
+	// No new chunks should get created by the copy.
+	var finalChunkCount int64
+	require.NoError(t, fileSets.ChunkStorage().List(context.Background(), func(_ string) error {
+		finalChunkCount++
+		return nil
+	}))
+	require.Equal(t, initialChunkCount, finalChunkCount)
+}
 
 // func TestCompaction(t *testing.T) {
 // 	require.NoError(t, WithLocalStorage(func(fileSets *Storage) error {
