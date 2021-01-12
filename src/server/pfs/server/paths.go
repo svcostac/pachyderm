@@ -1,15 +1,12 @@
 package server
 
 import (
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	globlib "github.com/pachyderm/ohmyglob"
-	"github.com/pachyderm/pachyderm/src/client/pfs"
 	"github.com/pachyderm/pachyderm/src/client/pkg/errors"
-	"github.com/pachyderm/pachyderm/src/server/pkg/storage/fileset"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/fileset/index"
 )
 
@@ -60,14 +57,6 @@ func pathIsChild(parent, child string) bool {
 // "/" -> "/"
 func cleanPath(x string) string {
 	return "/" + strings.Trim(x, "/")
-}
-
-func commitPath(commit *pfs.Commit) string {
-	return commitKey(commit)
-}
-
-func compactedCommitPath(commit *pfs.Commit) string {
-	return path.Join(commitPath(commit), fileset.Compacted)
 }
 
 func checkFilePath(path string) error {
