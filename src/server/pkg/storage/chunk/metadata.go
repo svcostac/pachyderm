@@ -2,12 +2,12 @@ package chunk
 
 import (
 	"context"
-	"crypto/sha512"
 	"database/sql"
 	"encoding/hex"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/pachyderm/pachyderm/src/client/pkg/errors"
+	"github.com/pachyderm/pachyderm/src/server/pkg/pachhash"
 )
 
 // ID uniquely identifies a chunk. It is the hash of its content
@@ -15,9 +15,8 @@ type ID []byte
 
 // Hash produces an ID by hashing data
 func Hash(data []byte) ID {
-	h := sha512.New()
-	h.Write(data)
-	return h.Sum(nil)[:32]
+	sum := pachhash.Sum(data)
+	return sum[:]
 }
 
 // IDFromHex parses a hex string into an ID
