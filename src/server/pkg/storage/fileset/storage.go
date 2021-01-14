@@ -300,6 +300,9 @@ func (s *Storage) Delete(ctx context.Context, fileSet string) error {
 
 // SetTTL sets the time-to-live for the prefix p.
 func (s *Storage) SetTTL(ctx context.Context, p string, ttl time.Duration) (time.Time, error) {
+	if ttl == track.NoTTL {
+		return time.Time{}, errors.Errorf("cannot remove a TTL through Storeage.SetTTL")
+	}
 	oid := filesetObjectID(p)
 	return s.tracker.SetTTLPrefix(ctx, oid, ttl)
 }
