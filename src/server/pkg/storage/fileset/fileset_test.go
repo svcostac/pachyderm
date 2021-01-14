@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"path"
+	"strconv"
 	"testing"
 
 	units "github.com/docker/go-units"
@@ -16,7 +17,6 @@ import (
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/chunk"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/fileset/index"
 	"github.com/pachyderm/pachyderm/src/server/pkg/storage/track"
-	"github.com/pachyderm/pachyderm/src/server/pkg/testutil"
 )
 
 const (
@@ -102,7 +102,7 @@ func newTestStorage(t *testing.T) *Storage {
 }
 
 func TestWriteThenRead(t *testing.T) {
-	ctx := testutil.NewTestContext(t)
+	ctx := context.Background()
 	storage := newTestStorage(t)
 	fileNames := index.Generate("abc")
 	files := []*testFile{}
@@ -141,8 +141,51 @@ func TestWriteThenRead(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestWriteThenReadFuzz(t *testing.T) {
+	ctx := context.Background()
+	storage := newTestStorage(t)
+	fileNames := index.Generate("abc")
+	files := []*testFile{}
+	for _, fileName := range fileNames {
+		var parts []*testPart
+		for _, tagInt := range rand.Perm(maxTags) {
+			tag := fmt.Sprintf("%08x", tagInt)
+			data := chunk.RandSeq(rand.Intn(max))
+			parts = append(parts, &testPart{
+				tag:  tag,
+				data: data,
+			})
+		}
+		files = append(files, &testFile{
+			path: "/" + fileName,
+		})
+	}
+
+	// Write out ten filesets where each subsequent fileset has the content of one random file changed.
+	// Confirm that all of the content and hashes other than the changed file remain the same.
+	N := len(fileNames)
+	for i := 0; i < N; i++ {
+		fileset := path.Join(testPath, strconv.Itoa(i)+"_")
+		// Write the files to the fileset.
+		writeFileSet(t, storage, fileset, files)
+		r, err := storage.Open(ctx, []string{fileset})
+		require.NoError(t, err)
+		filesIter := files
+		require.NoError(t, r.Iterate(ctx, func(f File) error {
+			checkFile(t, f, filesIter[0])
+			filesIter = filesIter[1:]
+			return nil
+		}))
+		files[i].parts = append(files[i].parts, &testPart{
+			data: chunk.RandSeq(rand.Intn(max)),
+			tag:  "test-tag",
+		})
+		require.NoError(t, storage.Delete(ctx, fileset))
+	}
+}
+
 func TestCopy(t *testing.T) {
-	ctx := testutil.NewTestContext(t)
+	ctx := context.Background()
 	fileSets := newTestStorage(t)
 	fileNames := index.Generate("abc")
 	files := []*testFile{}

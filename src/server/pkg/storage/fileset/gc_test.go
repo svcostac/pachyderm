@@ -27,11 +27,15 @@ func TestGC(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 	// check that it's there
-	require.True(t, s.exists(ctx, testFilesetName))
+	exists, err := s.exists(ctx, testFilesetName)
+	require.NoError(t, err)
+	require.True(t, exists)
 	// run the gc
 	countDeleted, err := gc.RunOnce(ctx)
 	require.NoError(t, err)
 	require.True(t, countDeleted > 0)
 	// check that it's not there
-	require.False(t, s.exists(ctx, testFilesetName))
+	exists, err = s.exists(ctx, testFilesetName)
+	require.NoError(t, err)
+	require.False(t, exists)
 }

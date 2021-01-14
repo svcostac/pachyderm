@@ -127,9 +127,12 @@ func (s *Storage) Open(ctx context.Context, fileSets []string, opts ...index.Opt
 }
 
 // TODO: public?
-func (s *Storage) exists(ctx context.Context, fileset string) bool {
+func (s *Storage) exists(ctx context.Context, fileset string) (bool, error) {
 	_, err := s.store.Get(ctx, fileset)
-	return err == nil
+	if err != nil && err != ErrPathNotExists {
+		return false, err
+	}
+	return err == nil, nil
 }
 
 // Shard shards the file set into path ranges.
@@ -291,7 +294,7 @@ func (s *Storage) Delete(ctx context.Context, fileSet string) error {
 		if err := s.store.Delete(ctx, name); err != nil {
 			return err
 		}
-		return s.tracker.MarkTombstone(ctx, oid)
+		return track.Drop(ctx, s.tracker, oid)
 	})
 }
 
