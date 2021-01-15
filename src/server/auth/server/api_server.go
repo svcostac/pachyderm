@@ -672,13 +672,6 @@ func (a *apiServer) GetClusterRoleBindings(ctx context.Context, req *auth.GetClu
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
 
-	switch a.activationState() {
-	case none:
-		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
-	}
-
 	a.adminMu.Lock()
 	defer a.adminMu.Unlock()
 	resp = &auth.GetClusterRoleBindingsResponse{
@@ -731,10 +724,6 @@ func (a *apiServer) ModifyClusterRoleBinding(ctx context.Context, req *auth.Modi
 
 func (a *apiServer) applyClusterRoleBindings(ctx context.Context, roleBindings map[string][]auth.ClusterRole) error {
 	// Check user is authenticated as a super admin for both ModifyClusterRoleBinding and ModifyAdmins
-	if !a.isActive() {
-		return auth.ErrNotActivated
-	}
-
 	// Don't allow users to modify role bindings for the root user. This ensures the root user always has
 	// super admin status, so they can fix the auth config if things are misconfigured.
 	for principal := range roleBindings {
@@ -1023,10 +1012,6 @@ func (a *apiServer) GetOneTimePassword(ctx context.Context, req *auth.GetOneTime
 	// credentials.
 	defer func(start time.Time) { a.LogResp(nil, nil, retErr, time.Since(start)) }(time.Now())
 
-	// Make sure auth is activated
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 	if req.Subject == ppsUser {
 		return nil, errors.Errorf("GetOneTimePassword.Subject is invalid")
 	}
@@ -1244,9 +1229,6 @@ func (a *apiServer) Authorize(
 func (a *apiServer) WhoAmI(ctx context.Context, req *auth.WhoAmIRequest) (resp *auth.WhoAmIResponse, retErr error) {
 	a.pachLogger.LogAtLevelFromDepth(req, nil, nil, 0, logrus.DebugLevel, 2)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	callerInfo, err := a.getAuthenticatedUser(ctx)
 	if err != nil {
@@ -1283,10 +1265,11 @@ func (a *apiServer) WhoAmI(ctx context.Context, req *auth.WhoAmIRequest) (resp *
 
 	// return final result
 	return &auth.WhoAmIResponse{
-		Username:     callerInfo.Subject,
-		TTL:          ttl,
-		IsAdmin:      isAdmin,
-		ClusterRoles: &adminRoles,
+		Username:       callerInfo.Subject,
+		TTL:            ttl,
+		IsAdmin:        isAdmin,
+		ClusterRoles:   &adminRoles,
+		FullyActivated: activationState == full,
 	}, nil
 }
 
@@ -1949,9 +1932,7 @@ func (a *apiServer) GetOIDCLogin(ctx context.Context, req *auth.GetOIDCLoginRequ
 func (a *apiServer) ExtendAuthToken(ctx context.Context, req *auth.ExtendAuthTokenRequest) (resp *auth.ExtendAuthTokenResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
+
 	if req.TTL == 0 {
 		return nil, errors.Errorf("invalid request: ExtendAuthTokenRequest.TTL must be > 0")
 	}
@@ -2100,9 +2081,6 @@ func (a *apiServer) setGroupsForUserInternal(ctx context.Context, subject string
 func (a *apiServer) SetGroupsForUser(ctx context.Context, req *auth.SetGroupsForUserRequest) (resp *auth.SetGroupsForUserResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	subject, err := a.canonicalizeSubject(ctx, req.Username)
 	if err != nil {
@@ -2119,9 +2097,6 @@ func (a *apiServer) SetGroupsForUser(ctx context.Context, req *auth.SetGroupsFor
 func (a *apiServer) ModifyMembers(ctx context.Context, req *auth.ModifyMembersRequest) (resp *auth.ModifyMembersResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	add, err := a.canonicalizeSubjects(ctx, req.Add)
 	if err != nil {
@@ -2210,9 +2185,6 @@ func (a *apiServer) getGroups(ctx context.Context, subject string) ([]string, er
 func (a *apiServer) GetGroups(ctx context.Context, req *auth.GetGroupsRequest) (resp *auth.GetGroupsResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	callerInfo, err := a.getAuthenticatedUser(ctx)
 	if err != nil {
@@ -2255,9 +2227,6 @@ func (a *apiServer) GetGroups(ctx context.Context, req *auth.GetGroupsRequest) (
 func (a *apiServer) GetUsers(ctx context.Context, req *auth.GetUsersRequest) (resp *auth.GetUsersResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	// Filter by group
 	if req.Group != "" {
@@ -2428,9 +2397,6 @@ func canonicalizeGitHubUsername(ctx context.Context, user string) (string, error
 func (a *apiServer) GetConfiguration(ctx context.Context, req *auth.GetConfigurationRequest) (resp *auth.GetConfigurationResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	// Retrieve & return configuration
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -2469,9 +2435,6 @@ func (a *apiServer) GetConfiguration(ctx context.Context, req *auth.GetConfigura
 func (a *apiServer) SetConfiguration(ctx context.Context, req *auth.SetConfigurationRequest) (resp *auth.SetConfigurationResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if !a.isActive() {
-		return nil, auth.ErrNotActivated
-	}
 
 	var reqConfigVersion int64
 	var configToStore *auth.AuthConfig
