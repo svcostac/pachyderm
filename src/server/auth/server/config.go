@@ -631,7 +631,7 @@ func (a *apiServer) watchConfig() {
 			}
 			b.Reset() // event successfully received
 
-			if a.activationState() != full {
+			if !a.isActive() {
 				return errors.Errorf("received config event while auth not fully " +
 					"activated (should be impossible), restarting")
 			}

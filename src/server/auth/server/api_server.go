@@ -15,7 +15,6 @@ import (
 	"github.com/pachyderm/pachyderm/src/client/pfs"
 	"github.com/pachyderm/pachyderm/src/client/pkg/errors"
 	"github.com/pachyderm/pachyderm/src/client/pkg/grpcutil"
-	"github.com/pachyderm/pachyderm/src/client/pps"
 	"github.com/pachyderm/pachyderm/src/client/version"
 	"github.com/pachyderm/pachyderm/src/server/pkg/backoff"
 	col "github.com/pachyderm/pachyderm/src/server/pkg/collection"
@@ -317,31 +316,10 @@ func waitForError(name string, required bool, cb func() error) {
 	}
 }
 
-type activationState int
-
-const (
-	none activationState = iota
-	partial
-	full
-)
-
-// activationState returns 'none' if auth is totally inactive, 'partial' if
-// auth.Activate has been called, but hasn't finished or failed, and full
-// if auth.Activate has been called and succeeded.
-//
-// When the activation state is 'partial' users cannot authenticate; the only
-// functioning auth API calls are Activate() (to retry activation) and
-// Deactivate() (to give up and revert to the 'none' state)
-func (a *apiServer) activationState() activationState {
+func (a *apiServer) isActive() bool {
 	a.adminMu.Lock()
 	defer a.adminMu.Unlock()
-	if len(a.adminCache) == 0 {
-		return none
-	}
-	if _, ppsUserIsAdmin := a.adminCache[ppsUser]; ppsUserIsAdmin {
-		return partial
-	}
-	return full
+	return len(a.adminCache) != 0
 }
 
 // Retrieve the PPS master token, or generate it and put it in etcd.
@@ -520,39 +498,8 @@ func (a *apiServer) Activate(ctx context.Context, req *auth.ActivateRequest) (re
 	// otherwise anyone can just activate the service again and set
 	// themselves as an admin. If activation failed in PFS, calling auth.Activate
 	// again should work (in this state, the only admin will be 'ppsUser')
-	if a.activationState() == full {
-		return nil, errors.Errorf("already activated")
-	}
-
-	// Hack: set the cluster admins to just {ppsUser}. This puts the auth system
-	// in the "partial" activation state. Users cannot authenticate, but auth
-	// checks are now enforced, which means no pipelines or repos can be created
-	// while ACLs are being added to every repo for the existing pipelines
-	if _, err = col.NewSTM(ctx, a.env.GetEtcdClient(), func(stm col.STM) error {
-		return a.admins.ReadWrite(stm).Put(ppsUser, epsilon)
-	}); err != nil {
-		return nil, err
-	}
-
-	// wait until watchAdmins has updated the local cache (changing the activation
-	// state)
-	b := backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = 30 * time.Second
-	if err := backoff.Retry(func() error {
-		if a.activationState() != partial {
-			return errors.Errorf("auth never entered \"partial\" activation state")
-		}
-		return nil
-	}, b); err != nil {
-		return nil, err
-	}
-	time.Sleep(time.Second) // give other pachd nodes time to update their cache
-
-	// Call PPS.ActivateAuth to set up all affected pipelines and repos
-	superUserClient := pachClient.WithCtx(pachClient.Ctx()) // clone pachClient
-	superUserClient.SetAuthToken(a.ppsToken)
-	if _, err := superUserClient.ActivateAuth(superUserClient.Ctx(), &pps.ActivateAuthRequest{}); err != nil {
-		return nil, err
+	if a.isActive() {
+		return nil, auth.ErrAlreadyActivated
 	}
 
 	// If the token hash was in the request, use it and return an empty response.
@@ -567,9 +514,6 @@ func (a *apiServer) Activate(ctx context.Context, req *auth.ActivateRequest) (re
 	if _, err = col.NewSTM(ctx, a.env.GetEtcdClient(), func(stm col.STM) error {
 		admins := a.admins.ReadWrite(stm)
 		tokens := a.tokens.ReadWrite(stm)
-		if err := admins.Delete(ppsUser); err != nil {
-			return err
-		}
 		if err := admins.Put(auth.RootUser, epsilon); err != nil {
 			return err
 		}
@@ -591,14 +535,13 @@ func (a *apiServer) Activate(ctx context.Context, req *auth.ActivateRequest) (re
 	// Activate() is rarely called, and it helps avoid races due to other pachd
 	// pods being out of date.
 	if err := backoff.Retry(func() error {
-		if a.activationState() != full {
+		if !a.isActive() {
 			return errors.Errorf("auth never entered \"full\" activation state")
 		}
 		return nil
-	}, b); err != nil {
+	}, backoff.RetryEvery(time.Second)); err != nil {
 		return nil, err
 	}
-	time.Sleep(time.Second) // give other pachd nodes time to update their cache
 	return &auth.ActivateResponse{PachToken: pachToken}, nil
 }
 
@@ -606,7 +549,7 @@ func (a *apiServer) Activate(ctx context.Context, req *auth.ActivateRequest) (re
 func (a *apiServer) Deactivate(ctx context.Context, req *auth.DeactivateRequest) (resp *auth.DeactivateResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() == none {
+	if !a.isActive() {
 		// users should be able to call "deactivate" from the "partial" activation
 		// state, in case activation fails and they need to revert to "none"
 
@@ -672,7 +615,7 @@ func (a *apiServer) Deactivate(ctx context.Context, req *auth.DeactivateRequest)
 	// Deactivate() is rarely called, and it helps avoid races due to other pachd
 	// pods being out of date.
 	if err := backoff.Retry(func() error {
-		if a.activationState() != none {
+		if a.isActive() {
 			return errors.Errorf("auth still activated")
 		}
 		return nil
@@ -743,20 +686,17 @@ func (a *apiServer) GetAdmins(ctx context.Context, req *auth.GetAdminsRequest) (
 func (a *apiServer) GetClusterRoleBindings(ctx context.Context, req *auth.GetClusterRoleBindingsRequest) (resp *auth.GetClusterRoleBindingsResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	switch a.activationState() {
-	case none:
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
-	case full:
-		// Get calling user. There is no auth check to see the list of cluster
-		// admins, other than that the user must log in. Otherwise how will users
-		// know who to ask for admin privileges? Requiring the user to be logged in
-		// mitigates phishing
-		_, err := a.getAuthenticatedUser(ctx)
-		if err != nil {
-			return nil, err
-		}
+	}
+
+	// Get calling user. There is no auth check to see the list of cluster
+	// admins, other than that the user must log in. Otherwise how will users
+	// know who to ask for admin privileges? Requiring the user to be logged in
+	// mitigates phishing
+	_, err := a.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	a.adminMu.Lock()
@@ -811,11 +751,8 @@ func (a *apiServer) ModifyClusterRoleBinding(ctx context.Context, req *auth.Modi
 
 func (a *apiServer) applyClusterRoleBindings(ctx context.Context, roleBindings map[string][]auth.ClusterRole) error {
 	// Check user is authenticated as a super admin for both ModifyClusterRoleBinding and ModifyAdmins
-	switch a.activationState() {
-	case none:
+	if !a.isActive() {
 		return auth.ErrNotActivated
-	case partial:
-		return auth.ErrPartiallyActivated
 	}
 
 	// Get calling user. The user must be an admin to change the list of admins
@@ -912,14 +849,8 @@ func (a *apiServer) expiredClusterAdminCheck(ctx context.Context, username strin
 
 // Authenticate implements the protobuf auth.Authenticate RPC
 func (a *apiServer) Authenticate(ctx context.Context, req *auth.AuthenticateRequest) (resp *auth.AuthenticateResponse, retErr error) {
-	switch a.activationState() {
-	case none:
-		// PPS is authenticated by a token read from etcd. It never calls or needs
-		// to call authenticate, even while the cluster is partway through the
-		// activation process
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
 	}
 
 	// We don't want to actually log the request/response since they contain
@@ -1129,14 +1060,8 @@ func (a *apiServer) GetOneTimePassword(ctx context.Context, req *auth.GetOneTime
 	defer func(start time.Time) { a.LogResp(nil, nil, retErr, time.Since(start)) }(time.Now())
 
 	// Make sure auth is activated
-	switch a.activationState() {
-	case none:
-		// PPS is authenticated by a token read from etcd. It never calls or needs
-		// to call authenticate, even while the cluster is partway through the
-		// activation process
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
 	}
 	if req.Subject == ppsUser {
 		return nil, errors.Errorf("GetOneTimePassword.Subject is invalid")
@@ -1277,7 +1202,7 @@ func (a *apiServer) AuthorizeInTransaction(
 	txnCtx *txnenv.TransactionContext,
 	req *auth.AuthorizeRequest,
 ) (resp *auth.AuthorizeResponse, retErr error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1355,7 +1280,7 @@ func (a *apiServer) Authorize(
 func (a *apiServer) WhoAmI(ctx context.Context, req *auth.WhoAmIRequest) (resp *auth.WhoAmIResponse, retErr error) {
 	a.pachLogger.LogAtLevelFromDepth(req, nil, nil, 0, logrus.DebugLevel, 2)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1449,7 +1374,7 @@ func (a *apiServer) SetScopeInTransaction(
 	txnCtx *txnenv.TransactionContext,
 	req *auth.SetScopeRequest,
 ) (*auth.SetScopeResponse, error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1592,7 +1517,7 @@ func (a *apiServer) GetScopeInTransaction(
 	txnCtx *txnenv.TransactionContext,
 	req *auth.GetScopeRequest,
 ) (*auth.GetScopeResponse, error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1695,7 +1620,7 @@ func (a *apiServer) GetACLInTransaction(
 	txnCtx *txnenv.TransactionContext,
 	req *auth.GetACLRequest,
 ) (*auth.GetACLResponse, error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1754,7 +1679,7 @@ func (a *apiServer) SetACLInTransaction(
 	txnCtx *txnenv.TransactionContext,
 	req *auth.SetACLRequest,
 ) (*auth.SetACLResponse, error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -1948,7 +1873,7 @@ func (a *apiServer) GetAuthToken(ctx context.Context, req *auth.GetAuthTokenRequ
 
 // GetAuthToken implements the protobuf auth.GetAuthToken RPC
 func (a *apiServer) GetAuthTokenInTransaction(txnCtx *txnenv.TransactionContext, req *auth.GetAuthTokenRequest) (resp *auth.GetAuthTokenResponse, retErr error) {
-	if a.activationState() == none {
+	if !a.isActive() {
 		// GetAuthToken must work in the partially-activated state so that PPS can
 		// get tokens for all existing pipelines during activation
 		return nil, auth.ErrNotActivated
@@ -2062,7 +1987,7 @@ func (a *apiServer) GetOIDCLogin(ctx context.Context, req *auth.GetOIDCLoginRequ
 func (a *apiServer) ExtendAuthToken(ctx context.Context, req *auth.ExtendAuthTokenRequest) (resp *auth.ExtendAuthTokenResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 	if req.TTL == 0 {
@@ -2138,7 +2063,7 @@ func (a *apiServer) RevokeAuthToken(ctx context.Context, req *auth.RevokeAuthTok
 }
 
 func (a *apiServer) RevokeAuthTokenInTransaction(txnCtx *txnenv.TransactionContext, req *auth.RevokeAuthTokenRequest) (resp *auth.RevokeAuthTokenResponse, retErr error) {
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 	// Get the caller. Users can revoke their own tokens, and admins can revoke
@@ -2229,7 +2154,7 @@ func (a *apiServer) setGroupsForUserInternal(ctx context.Context, subject string
 func (a *apiServer) SetGroupsForUser(ctx context.Context, req *auth.SetGroupsForUserRequest) (resp *auth.SetGroupsForUserResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -2264,7 +2189,7 @@ func (a *apiServer) SetGroupsForUser(ctx context.Context, req *auth.SetGroupsFor
 func (a *apiServer) ModifyMembers(ctx context.Context, req *auth.ModifyMembersRequest) (resp *auth.ModifyMembersResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -2371,7 +2296,7 @@ func (a *apiServer) getGroups(ctx context.Context, subject string) ([]string, er
 func (a *apiServer) GetGroups(ctx context.Context, req *auth.GetGroupsRequest) (resp *auth.GetGroupsResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -2416,7 +2341,7 @@ func (a *apiServer) GetGroups(ctx context.Context, req *auth.GetGroupsRequest) (
 func (a *apiServer) GetUsers(ctx context.Context, req *auth.GetUsersRequest) (resp *auth.GetUsersResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	if a.activationState() != full {
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
 	}
 
@@ -2605,11 +2530,8 @@ func canonicalizeGitHubUsername(ctx context.Context, user string) (string, error
 func (a *apiServer) GetConfiguration(ctx context.Context, req *auth.GetConfigurationRequest) (resp *auth.GetConfigurationResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	switch a.activationState() {
-	case none:
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
 	}
 
 	// Get calling user. The user must be logged in to get the cluster config
@@ -2654,11 +2576,8 @@ func (a *apiServer) GetConfiguration(ctx context.Context, req *auth.GetConfigura
 func (a *apiServer) SetConfiguration(ctx context.Context, req *auth.SetConfigurationRequest) (resp *auth.SetConfigurationResponse, retErr error) {
 	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(req, resp, retErr, time.Since(start)) }(time.Now())
-	switch a.activationState() {
-	case none:
+	if !a.isActive() {
 		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
 	}
 
 	// Get calling user. The user must be an admin to set the cluster config
@@ -2721,16 +2640,13 @@ func (a *apiServer) SetConfiguration(ctx context.Context, req *auth.SetConfigura
 }
 
 func (a *apiServer) ExtractAuthTokens(ctx context.Context, req *auth.ExtractAuthTokensRequest) (resp *auth.ExtractAuthTokensResponse, retErr error) {
-	switch a.activationState() {
-	case none:
-		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
-	}
-
 	// We don't want to actually log the request/response since they contain
 	// credentials.
+	a.LogReq(req)
 	defer func(start time.Time) { a.LogResp(nil, nil, retErr, time.Since(start)) }(time.Now())
+	if !a.isActive() {
+		return nil, auth.ErrNotActivated
+	}
 
 	// Get calling user. The user must be an admin to extract auth tokens.
 	callerInfo, err := a.getAuthenticatedUser(ctx)
@@ -2787,16 +2703,14 @@ func (a *apiServer) ExtractAuthTokens(ctx context.Context, req *auth.ExtractAuth
 }
 
 func (a *apiServer) RestoreAuthToken(ctx context.Context, req *auth.RestoreAuthTokenRequest) (resp *auth.RestoreAuthTokenResponse, retErr error) {
-	switch a.activationState() {
-	case none:
-		return nil, auth.ErrNotActivated
-	case partial:
-		return nil, auth.ErrPartiallyActivated
-	}
-
+	a.LogReq(req)
 	// We don't want to actually log the request/response since they contain
 	// credentials.
 	defer func(start time.Time) { a.LogResp(nil, nil, retErr, time.Since(start)) }(time.Now())
+
+	if !a.isActive() {
+		return nil, auth.ErrNotActivated
+	}
 
 	// Get calling user. The user must be an admin to restore an auth token
 	callerInfo, err := a.getAuthenticatedUser(ctx)
