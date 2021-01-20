@@ -1,8 +1,6 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	goerr "errors"
 	"fmt"
 	"net/http"
@@ -11,6 +9,7 @@ import (
 
 	"github.com/pachyderm/pachyderm/src/client/auth"
 	"github.com/pachyderm/pachyderm/src/client/pkg/errors"
+	"github.com/pachyderm/pachyderm/src/client/pkg/random"
 	"github.com/pachyderm/pachyderm/src/server/pkg/backoff"
 	col "github.com/pachyderm/pachyderm/src/server/pkg/collection"
 	"github.com/pachyderm/pachyderm/src/server/pkg/watch"
@@ -98,26 +97,6 @@ type InternalOIDCProvider struct {
 	States col.Collection
 }
 
-// CryptoString returns a cryptographically random, URL safe string with length
-// at least n
-//
-// TODO(msteffen): move away from UUIDv4 towards this (current implementation of
-// UUIDv4 produces UUIDs via CSPRNG, but the UUIDv4 spec doesn't guarantee that
-// behavior, and we shouldn't assume it going forward)
-func CryptoString(n int) string {
-	var numBytes int
-	for n >= base64.RawURLEncoding.EncodedLen(numBytes) {
-		numBytes++
-	}
-	b := make([]byte, numBytes)
-	_, err := rand.Read(b)
-	if err != nil {
-		panic("could not generate cryptographically secure random string!")
-	}
-
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
 // half is a helper function used to log the first half of OIDC state tokens in
 // logs.
 //
@@ -193,8 +172,8 @@ func (o *InternalOIDCProvider) GetOIDCLoginURL(ctx context.Context) (string, str
 		return "", "", errors.WithStack(errNotConfigured)
 	}
 
-	state := CryptoString(30)
-	nonce := CryptoString(30)
+	state := random.String(30)
+	nonce := random.String(30)
 	conf := oauth2.Config{
 		ClientID:     o.ClientID,
 		ClientSecret: o.ClientSecret,
