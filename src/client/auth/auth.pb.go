@@ -1378,6 +1378,7 @@ func (m *OTPInfo) GetSessionExpiration() *types.Timestamp {
 // TokenInfo is the 'value' of an auth token 'key' in the 'tokens' collection
 type TokenInfo struct {
 	// Subject (i.e. Pachyderm account) that a given token authorizes.
+	// See the note at the top of the doc for an explanation of subject structure.
 	Subject              string                `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
 	Source               TokenInfo_TokenSource `protobuf:"varint,2,opt,name=source,proto3,enum=auth.TokenInfo_TokenSource" json:"source,omitempty"`
 	XXX_NoUnkeyedLiteral struct{}              `json:"-"`
@@ -1662,7 +1663,7 @@ func (m *WhoAmIResponse) GetClusterRoles() *ClusterRoles {
 }
 
 type ACL struct {
-	// principal -> scope. All principal names are fully-qualified.
+	// principal -> scope. All principal names include the structured prefix indicating their type.
 	Entries              map[string]Scope `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3,enum=auth.Scope"`
 	XXX_NoUnkeyedLiteral struct{}         `json:"-"`
 	XXX_unrecognized     []byte           `json:"-"`
